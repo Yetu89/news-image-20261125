@@ -1,229 +1,246 @@
-"""Render THE DAILY GLOBE front page for Wednesday 25 November 2026.
+"""Paint THE DAILY GLOBE front page for Wednesday 25 November 2026.
 
-Reads tools/stories.json and draws a 1024x1024 newspaper front page
-into entry.png at the repository root. Pillow plus the standard library.
-The output is deterministic: identical input always yields identical bytes.
+The day's stories live in tools/stories.json. This script turns them
+into a 1024 by 1024 newspaper front page and saves it as entry.png in
+the repository root. Only Pillow and the standard library are used.
+There is no network, no clock and no randomness anywhere, so running
+the script twice over the same stories file paints identical bytes.
 """
 
 import json
 import os
+
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-DATA_PATH = os.path.join(HERE, "stories.json")
-OUT_PATH = os.path.join(ROOT, "entry.png")
+STORIES_PATH = os.path.join(HERE, "stories.json")
+IMAGE_PATH = os.path.join(ROOT, "entry.png")
 
-W, H = 1024, 1024
-MX = 42                      # side margin
-CW = W - 2 * MX              # content width
+PAGE = 1024
+MARGIN = 42
+CONTENT = PAGE - 2 * MARGIN
 
-PAPER = (247, 243, 232)
-INK = (22, 22, 22)
-GREY = (72, 72, 72)
-RULE = (150, 145, 130)
-RED = (139, 26, 26)
-PANEL = (238, 233, 219)
-EDGE = (180, 172, 150)
+PAPER = (248, 244, 233)
+INK = (24, 24, 24)
+MUTED = (74, 74, 74)
+FAINT = (152, 147, 132)
+ACCENT = (140, 28, 28)
+LEAF = (26, 112, 62)
+PANEL = (239, 234, 220)
+EDGE = (182, 174, 152)
 
-FONTS = "/usr/share/fonts/truetype/dejavu"
+FONT_DIR = "/usr/share/fonts/truetype/dejavu"
+STYLES = {
+    "serif_b": "DejaVuSerif-Bold.ttf",
+    "serif": "DejaVuSerif.ttf",
+    "sans": "DejaVuSans.ttf",
+    "sans_b": "DejaVuSans-Bold.ttf",
+}
 
 
-def font(name, size):
+def face(style, size):
+    """A TrueType face at the asked size, or the bitmap default."""
     try:
-        return ImageFont.truetype(os.path.join(FONTS, name), size)
+        return ImageFont.truetype(os.path.join(FONT_DIR, STYLES[style]), size)
     except OSError:
         return ImageFont.load_default()
 
 
-def serif_b(s):
-    return font("DejaVuSerif-Bold.ttf", s)
-
-
-def serif(s):
-    return font("DejaVuSerif.ttf", s)
-
-
-def sans(s):
-    return font("DejaVuSans.ttf", s)
-
-
-def sans_b(s):
-    return font("DejaVuSans-Bold.ttf", s)
-
-
-def fit_font(draw, name, text, size, max_w):
-    """Largest size at or below `size` whose rendering fits max_w."""
+def shrink_to_fit(draw, style, text, size, width):
+    """Biggest size at or under `size` whose text fits `width`."""
     while size > 8:
-        f = font(name, size)
-        if draw.textlength(text, font=f) <= max_w:
-            return f
+        candidate = face(style, size)
+        if draw.textlength(text, font=candidate) <= width:
+            return candidate
         size -= 1
-    return font(name, 8)
+    return face(style, 8)
 
 
-def wrap(draw, text, f, max_w):
-    lines, cur = [], ""
+def wrap_text(draw, text, fnt, width):
+    """Split `text` into lines no wider than `width`."""
+    rows = []
+    current = ""
     for word in text.split():
-        trial = word if not cur else cur + " " + word
-        if draw.textlength(trial, font=f) <= max_w:
-            cur = trial
+        trial = word if not current else current + " " + word
+        if draw.textlength(trial, font=fnt) <= width:
+            current = trial
         else:
-            if cur:
-                lines.append(cur)
-            cur = word
-    if cur:
-        lines.append(cur)
-    return lines
+            if current:
+                rows.append(current)
+            current = word
+    if current:
+        rows.append(current)
+    return rows
 
 
-def para(draw, x, y, text, f, fill, max_w, leading, limit=None):
-    lines = wrap(draw, text, f, max_w)
-    if limit is not None and len(lines) > limit:
-        lines = lines[:limit]
-        lines[-1] = lines[-1].rstrip() + " ..."
-    for line in lines:
-        draw.text((x, y), line, font=f, fill=fill)
+def block(draw, x, y, text, fnt, colour, width, leading, limit=None):
+    """Draw a wrapped paragraph; return the y below its last line."""
+    rows = wrap_text(draw, text, fnt, width)
+    if limit is not None and len(rows) > limit:
+        rows = rows[:limit]
+        rows[-1] = rows[-1].rstrip() + " ..."
+    for row in rows:
+        draw.text((x, y), row, font=fnt, fill=colour)
         y += leading
     return y
 
 
-def hline(draw, y, weight=2, color=RULE):
-    draw.line([(MX, y), (W - MX, y)], fill=color, width=weight)
+def rule(draw, y, weight=2, colour=FAINT):
+    """A horizontal rule across the content column."""
+    draw.line([(MARGIN, y), (PAGE - MARGIN, y)], fill=colour, width=weight)
     return y + weight
 
 
-def draw_chart(draw, x, y, w, h):
-    """Falling bar chart with a bold red arrow pointing down: Brent slides."""
+def falling_chart(draw, x, y, w, h):
+    """Falling red bars with a downward trend arrow: Brent slides."""
     base = y + h - 8
-    bars = [1.0, 0.94, 0.88, 0.78, 0.72, 0.60, 0.55, 0.44, 0.38, 0.26, 0.16]
-    bw = w // len(bars)
-    for i, frac in enumerate(bars):
-        bh = int((h - 40) * frac)
-        bx = x + i * bw + 3
-        draw.rectangle([bx, base - bh, bx + bw - 6, base], fill=RED)
+    levels = [1.0, 0.9, 0.94, 0.76, 0.8, 0.62, 0.66, 0.48, 0.52, 0.34, 0.24]
+    step = w // len(levels)
+    for i, frac in enumerate(levels):
+        top = base - int((h - 40) * frac)
+        left = x + i * step + 3
+        draw.rectangle([left, top, left + step - 6, base], fill=ACCENT)
     draw.line([(x, base), (x + w, base)], fill=INK, width=3)
-    # Arrow from the first bar top down to above the last bar.
-    ax0, ay0 = x + 6, base - int((h - 40) * 1.0) - 6
-    ax1, ay1 = x + w - 16, base - int((h - 40) * 0.16) - 12
-    draw.line([(ax0, ay0), (ax1, ay1)], fill=RED, width=5)
+    start = (x + 6, base - int((h - 40) * levels[0]) - 6)
+    end = (x + w - 14, base - int((h - 40) * levels[-1]) + 8)
+    draw.line([start, end], fill=ACCENT, width=5)
     draw.polygon(
-        [(ax1 - 4, ay1 - 16), (ax1 + 18, ay1 + 10), (ax1 - 18, ay1 + 8)],
-        fill=RED,
+        [(end[0] - 16, end[1] - 14), (end[0] + 4, end[1] + 2),
+         (end[0] - 18, end[1] + 12)],
+        fill=ACCENT,
     )
     return base
 
 
-def draw_lead(draw, lead, x, y, width):
-    art_w = 300
+def lead_block(draw, lead, x, y, width):
+    """Lead story: kicker, headline, body, falling-chart picture."""
+    art_w = 320
     text_w = width - art_w - 26
-    draw.text((x, y), lead["kicker"], font=sans_b(20), fill=RED)
+    draw.text((x, y), lead["kicker"], font=face("sans_b", 20), fill=ACCENT)
     y += 30
-    y = para(draw, x, y, lead["headline"], serif_b(31), INK, text_w, 37)
+    y = block(draw, x, y, lead["headline"], face("serif_b", 33), INK,
+              text_w, 40)
     y += 8
-    y = para(draw, x, y, lead["body"], sans(17), GREY, text_w, 23, limit=2)
-    top = y - 120
+    y = block(draw, x, y, lead["body"], face("sans", 18), MUTED, text_w,
+              24, limit=2)
+    art_top = y - 140
     art_x = x + text_w + 26
-    bottom = draw_chart(draw, art_x, top, art_w, 120)
-    cap = sans(15)
+    bottom = falling_chart(draw, art_x, art_top, art_w, 140)
+    caption = face("sans", 15)
     label = lead["chart_label"]
-    tw = draw.textlength(label, font=cap)
-    draw.text((art_x + (art_w - tw) / 2, bottom + 6), label, font=cap, fill=GREY)
+    label_w = draw.textlength(label, font=caption)
+    draw.text((art_x + (art_w - label_w) / 2, bottom + 6), label,
+              font=caption, fill=MUTED)
     return max(y, bottom + 24)
 
 
-def draw_story(draw, story, x, y, width):
-    draw.text((x, y), story["kicker"], font=sans_b(16), fill=RED)
+def story_block(draw, story, x, y, width):
+    """One smaller story: kicker, headline, two lines of body."""
+    draw.text((x, y), story["kicker"], font=face("sans_b", 16), fill=ACCENT)
     y += 20
-    y = para(draw, x, y, story["headline"], serif_b(20), INK, width, 23)
+    y = block(draw, x, y, story["headline"], face("serif_b", 21), INK,
+              width, 25)
     y += 4
-    y = para(draw, x, y, story["body"], sans(15), GREY, width, 19, limit=2)
+    y = block(draw, x, y, story["body"], face("sans", 15), MUTED, width,
+              19, limit=2)
     return y
 
 
-def draw_briefs(draw, items, x, y, width):
-    draw.text((x, y), "IN BRIEF", font=sans_b(18), fill=INK)
-    y += 24
+def briefs_block(draw, items, x, y, width):
+    """The IN BRIEF list of one-line briefs."""
+    draw.text((x, y), "IN BRIEF", font=face("sans_b", 18), fill=INK)
+    y += 26
     for item in items:
-        draw.text((x, y), "\u2022", font=sans(18), fill=RED)
-        y = para(draw, x + 20, y, item, sans(17), GREY, width - 20, 19)
-        y += 1
+        draw.text((x, y), "\u2022", font=face("sans", 18), fill=ACCENT)
+        y = block(draw, x + 20, y, item, face("sans", 17), MUTED,
+                  width - 20, 20)
+        y += 2
     return y
 
 
-def draw_markets(draw, markets, x, y, width):
-    box_h = 72
-    draw.rectangle(
-        [x, y, x + width, y + box_h], fill=PANEL, outline=EDGE, width=2
-    )
-    draw.text((x + 14, y + 7), "MARKETS  —  WEDNESDAY CLOSE", font=sans_b(16), fill=INK)
+def markets_block(draw, markets, x, y, width):
+    """A boxed strip of the day's market closes."""
+    box_h = 78
+    draw.rectangle([x, y, x + width, y + box_h], fill=PANEL,
+                   outline=EDGE, width=2)
+    draw.text((x + 14, y + 8), "MARKETS  \u2014  WEDNESDAY CLOSE",
+              font=face("sans_b", 16), fill=INK)
     cell_w = width // len(markets)
     for i, m in enumerate(markets):
-        cx = x + i * cell_w + cell_w // 2
-        lab = sans(15)
-        lw = draw.textlength(m["label"], font=lab)
-        draw.text((cx - lw / 2, y + 27), m["label"], font=lab, fill=GREY)
-        fig = fit_font(draw, "DejaVuSans-Bold.ttf", m["text"], 22, cell_w - 12)
-        fw = draw.textlength(m["text"], font=fig)
-        draw.text((cx - fw / 2, y + 45), m["text"], font=fig, fill=INK)
+        centre = x + i * cell_w + cell_w // 2
+        lab = face("sans", 15)
+        lab_w = draw.textlength(m["label"], font=lab)
+        draw.text((centre - lab_w / 2, y + 30), m["label"], font=lab,
+                  fill=MUTED)
+        fig = shrink_to_fit(draw, "sans_b", m["text"], 22, cell_w - 12)
+        fig_w = draw.textlength(m["text"], font=fig)
+        draw.text((centre - fig_w / 2, y + 48), m["text"], font=fig,
+                  fill=INK)
     return y + box_h
 
 
-def build():
-    with open(DATA_PATH, encoding="utf-8") as handle:
+def paint():
+    """Read the stories and paint the whole front page."""
+    with open(STORIES_PATH, encoding="utf-8") as handle:
         data = json.load(handle)
 
-    page = Image.new("RGB", (W, H), PAPER)
+    page = Image.new("RGB", (PAGE, PAGE), PAPER)
     draw = ImageDraw.Draw(page)
+    draw.rectangle([6, 6, PAGE - 7, PAGE - 7], outline=EDGE, width=2)
 
     y = 20
-    title = serif_b(54)
-    tw = draw.textlength(data["paper"], font=title)
-    draw.text(((W - tw) / 2, y), data["paper"], font=title, fill=INK)
+    title = face("serif_b", 54)
+    title_w = draw.textlength(data["paper"], font=title)
+    draw.text(((PAGE - title_w) / 2, y), data["paper"], font=title,
+              fill=INK)
     y += 62
-    y = hline(draw, y, 2)
+    y = rule(draw, y, 2)
     y += 8
-    date_f = sans_b(23)
-    draw.text((MX, y), data["date"].upper(), font=date_f, fill=RED)
-    tag = sans(19)
+    date_f = face("sans_b", 23)
+    draw.text((MARGIN, y), data["date"].upper(), font=date_f, fill=ACCENT)
+    tag = face("sans", 19)
     tag_w = draw.textlength(data["tagline"], font=tag)
-    draw.text((W - MX - tag_w, y + 2), data["tagline"], font=tag, fill=GREY)
+    draw.text((PAGE - MARGIN - tag_w, y + 2), data["tagline"], font=tag,
+              fill=MUTED)
     y += 30
-    y = hline(draw, y, 3, INK)
+    y = rule(draw, y, 3, INK)
     y += 14
 
-    y = draw_lead(draw, data["lead"], MX, y, CW)
-    y += 8
-    y = hline(draw, y, 2)
+    y = lead_block(draw, data["lead"], MARGIN, y, CONTENT)
     y += 10
+    y = rule(draw, y, 2)
+    y += 12
 
-    col_w = (CW - 24) // 2
+    col_w = (CONTENT - 24) // 2
     left_y = right_y = y
     for i, story in enumerate(data["stories"]):
         if i % 2 == 0:
-            left_y = draw_story(draw, story, MX, left_y, col_w)
-            left_y += 8
+            left_y = story_block(draw, story, MARGIN, left_y, col_w)
+            left_y += 10
         else:
-            right_y = draw_story(draw, story, MX + col_w + 24, right_y, col_w)
-            right_y += 8
+            right_y = story_block(draw, story, MARGIN + col_w + 24,
+                                  right_y, col_w)
+            right_y += 10
     y = max(left_y, right_y)
-    y = hline(draw, y, 2)
-    y += 8
+    y = rule(draw, y, 2)
+    y += 10
 
-    y = draw_briefs(draw, data["briefs"], MX, y, CW)
+    y = briefs_block(draw, data["briefs"], MARGIN, y, CONTENT)
     y += 6
-    y = draw_markets(draw, data["markets"], MX, y, CW)
-    y += 8
+    y = markets_block(draw, data["markets"], MARGIN, y, CONTENT)
+    y += 10
 
-    foot = sans(13)
-    fw = draw.textlength(data["footer"], font=foot)
-    draw.text(((W - fw) / 2, H - 28), data["footer"], font=foot, fill=GREY)
+    foot = face("sans", 13)
+    foot_w = draw.textlength(data["footer"], font=foot)
+    draw.text(((PAGE - foot_w) / 2, PAGE - 28), data["footer"], font=foot,
+              fill=MUTED)
 
     print("layout: content ends at y =", y)
-    assert y < H - 40, f"layout overflow: content ends at y={y}"
-    page.save(OUT_PATH, "PNG")
-    print("wrote", OUT_PATH)
+    assert y < PAGE - 40, f"layout overflow: content ends at y={y}"
+    page.save(IMAGE_PATH, "PNG")
+    print("wrote", IMAGE_PATH)
 
 
 if __name__ == "__main__":
-    build()
+    paint()
